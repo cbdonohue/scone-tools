@@ -1,0 +1,356 @@
+name: Manual Integration Testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_scenario:
+        description: 'Test scenario to run'
+        required: true
+        default: 'basic'
+        type: choice
+        options:
+        - basic
+        - network-namespaces
+        - full-demo
+        - custom
+      custom_command:
+        description: 'Custom command to run (if custom scenario selected)'
+        required: false
+        type: string
+      timeout_minutes:
+        description: 'Timeout in minutes'
+        required: false
+        default: '30'
+        type: string
+
+jobs:
+  manual-test:
+    runs-on: ubuntu-latest
+    name: Manual Integration Test
+    timeout-minutes: ${{ fromJson(github.event.inputs.timeout_minutes) }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up environment
+      run: |
+        echo "🚀 Setting up manual test environment..."
+        echo "Selected scenario: ${{ github.event.inputs.test_scenario }}"
+        
+        sudo apt-get update
+        sudo apt-get install -y \
+          python3-bpfcc \
+          clang \
+          llvm \
+          libbpf-dev \
+          linux-headers-$(uname -r) \
+          build-essential \
+          iproute2 \
+          tcpdump \
+          netcat-openbsd \
+          socat \
+          iperf3
+
+    - name: System capability check
+      run: |
+        echo "🔍 Checking system capabilities..."
+        
+        # Check current user capabilities
+        echo "Current user: $(whoami)"
+        echo "User ID: $(id)"
+        
+        # Check if we can create network namespaces
+        if sudo ip netns add test-ns 2>/dev/null; then
+          echo "✅ Can create network namespaces"
+          sudo ip netns delete test-ns
+        else
+          echo "❌ Cannot create network namespaces"
+        fi
+        
+        # Check kernel modules
+        echo "Kernel version: $(uname -r)"
+        
+        # Check eBPF capabilities
+        if [ -f /proc/sys/net/core/bpf_jit_enable ]; then
+          echo "eBPF JIT: $(cat /proc/sys/net/core/bpf_jit_enable)"
+        fi
+
+    - name: Compile eBPF code
+      run: |
+        echo "🔧 Compiling eBPF code..."
+        clang -O2 -target bpf -c scone_ebpf.c -o scone_ebpf.o
+        file scone_ebpf.o
+        ls -la scone_ebpf.o
+
+    - name: Run basic scenario
+      if: github.event.inputs.test_scenario == 'basic'
+      run: |
+        echo "🧪 Running basic test scenario..."
+        
+        # Test Python script import and basic functionality
+        python3 -c "
+        import sys
+        try:
+            exec(open('scone.py').read())
+        except IndexError:
+            print('✅ Script requires arguments as expected')
+        except Exception as e:
+            print(f'❌ Unexpected error: {e}')
+            sys.exit(1)
+        "
+        
+        # Test eBPF loading capability (will fail without root, but we can check syntax)
+        echo "Testing eBPF syntax validation..."
+        python3 -c "
+        from bcc import BPF
+        try:
+            with open('scone_ebpf.c', 'r') as f:
+                code = f.read()
+            # Try to create BPF object (will fail due to permissions but syntax will be checked)
+            b = BPF(text=code)
+            print('✅ eBPF code syntax is valid')
+        except Exception as e:
+            if 'Operation not permitted' in str(e):
+                print('✅ eBPF syntax OK (expected permission error)')
+            else:
+                print(f'❌ eBPF syntax error: {e}')
+                raise
+        "
+
+    - name: Run network namespace scenario
+      if: github.event.inputs.test_scenario == 'network-namespaces' 
+      run: |
+        echo "🌐 Testing network namespace functionality..."
+        
+        # This requires elevated privileges - document what would be tested
+        echo "This test would perform the following if run with proper privileges:"
+        echo "1. Create network namespaces as defined in scone_demo.sh"
+        echo "2. Set up virtual ethernet pairs"  
+        echo "3. Configure IP addresses and routing"
+        echo "4. Load eBPF modules on interfaces"
+        echo "5. Run basic connectivity tests"
+        
+        # For now, just validate the demo script structure
+        echo "🔍 Validating demo script structure..."
+        bash -n scone_demo.sh
+        echo "✅ Demo script syntax is valid"
+        
+        # Check that required commands exist
+        commands=("ip" "tcpdump" "python3")
+        for cmd in "${commands[@]}"; do
+          if command -v "$cmd" >/dev/null 2>&1; then
+            echo "✅ Found command: $cmd"
+          else
+            echo "❌ Missing command: $cmd"
+          fi
+        done
+
+    - name: Run full demo scenario
+      if: github.event.inputs.test_scenario == 'full-demo'
+      run: |
+        echo "🎯 Full demo test scenario..."
+        echo "⚠️  This scenario requires root privileges and the 'hq' binary"
+        
+        # Check for hq binary
+        if [ -f "./hq" ]; then
+          echo "✅ Found hq binary"
+          file ./hq
+        else
+          echo "❌ Missing hq binary - this is required for full demo"
+          echo "Please build hq following the README instructions"
+        fi
+        
+        # Validate that all components are ready
+        echo "🔍 Checking demo prerequisites..."
+        
+        # Check script permissions
+        if [ -x "scone_demo.sh" ]; then
+          echo "✅ Demo script is executable"
+        else
+          echo "⚠️  Demo script not executable - fixing..."
+          chmod +x scone_demo.sh
+        fi
+        
+        # Document what the full test would do
+        echo ""
+        echo "Full demo would execute:"
+        echo "1. Run the complete scone_demo.sh script"
+        echo "2. Create network topology with 4 namespaces"
+        echo "3. Install eBPF modules on interfaces"
+        echo "4. Start QUIC transfers using hq"
+        echo "5. Capture and analyze packet flows"
+        echo "6. Report eBPF counters and statistics"
+        echo ""
+        echo "To run manually with privileges: sudo ./scone_demo.sh"
+
+    - name: Run custom scenario
+      if: github.event.inputs.test_scenario == 'custom'
+      run: |
+        echo "🛠️  Running custom test scenario..."
+        
+        if [ -n "${{ github.event.inputs.custom_command }}" ]; then
+          echo "Executing: ${{ github.event.inputs.custom_command }}"
+          ${{ github.event.inputs.custom_command }}
+        else
+          echo "No custom command provided"
+          exit 1
+        fi
+
+    - name: Generate test artifacts
+      if: always()
+      run: |
+        echo "📄 Generating test artifacts..."
+        
+        # Create test summary
+        cat > test_summary.txt << EOF
+        Manual Integration Test Summary
+        ===============================
+        Scenario: ${{ github.event.inputs.test_scenario }}
+        Timestamp: $(date)
+        Kernel: $(uname -r)
+        OS: $(lsb_release -d 2>/dev/null | cut -f2 || echo "Unknown")
+        
+        System Capabilities:
+        - Network namespaces: $(sudo ip netns add test-check 2>/dev/null && echo "Available" || echo "Not available")
+        - eBPF support: $([ -f /proc/sys/net/core/bpf_jit_enable ] && echo "Available" || echo "Unknown")
+        
+        Files Present:
+        - scone.py: $([ -f scone.py ] && echo "✅" || echo "❌")
+        - scone_ebpf.c: $([ -f scone_ebpf.c ] && echo "✅" || echo "❌") 
+        - scone_demo.sh: $([ -f scone_demo.sh ] && echo "✅" || echo "❌")
+        - hq binary: $([ -f hq ] && echo "✅" || echo "❌")
+        EOF
+        
+        # Clean up test namespace if created
+        sudo ip netns delete test-check 2>/dev/null || true
+        
+        cat test_summary.txt
+
+    - name: Upload test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: manual-test-results-${{ github.event.inputs.test_scenario }}
+        path: |
+          test_summary.txt
+          scone_ebpf.o
+        retention-days: 7
+
+  create-instructions:
+    runs-on: ubuntu-latest
+    name: Generate Testing Instructions
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Create testing guide
+      run: |
+        cat > TESTING.md << 'EOF'
+        # SCONE Tools Testing Guide
+        
+        ## Automated Testing (CI/CD)
+        
+        The project includes several GitHub Actions workflows for automated testing:
+        
+        ### 1. Basic Tests (`test.yml`)
+        - **Triggers**: Push to main/develop, pull requests
+        - **What it tests**: Python syntax, eBPF compilation, shell script validation, documentation
+        - **Environment**: Standard GitHub Actions runners (no root required)
+        
+        ### 2. Advanced Tests (`advanced-test.yml`) 
+        - **Triggers**: Push to main, PRs, weekly schedule, manual dispatch
+        - **What it tests**: Multi-version compatibility, kernel features, static analysis
+        - **Environment**: Multiple Ubuntu versions and Python versions
+        
+        ### 3. Manual Integration Tests (`manual-integration.yml`)
+        - **Triggers**: Manual dispatch only
+        - **What it tests**: System capabilities, privileged operations (simulated)
+        - **Environment**: Controlled testing environment
+        
+        ## Local Testing
+        
+        ### Prerequisites
+        ```bash
+        # Install required packages
+        sudo apt-get update
+        sudo apt-get install -y python3-bpfcc clang llvm libbpf-dev \
+            linux-headers-$(uname -r) build-essential iproute2 tcpdump
+        ```
+        
+        ### Basic Tests (No Root Required)
+        ```bash
+        # Test Python syntax
+        python3 -m py_compile scone.py
+        
+        # Test eBPF compilation
+        clang -O2 -target bpf -c scone_ebpf.c -o scone_ebpf.o
+        
+        # Test shell script syntax
+        bash -n scone_demo.sh
+        ```
+        
+        ### Integration Tests (Root Required)
+        ```bash
+        # Test network namespace creation
+        sudo ip netns add test-ns
+        sudo ip netns list
+        sudo ip netns delete test-ns
+        
+        # Test eBPF loading (requires dummy interface)
+        sudo python3 scone.py lo add_scone_ebpf
+        # (Press Ctrl+C to stop and see statistics)
+        ```
+        
+        ### Full Demo Test
+        ```bash
+        # Build hq binary first (see README.md)
+        # Then run the full demo
+        sudo ./scone_demo.sh
+        ```
+        
+        ## Testing in Different Environments
+        
+        ### Docker Testing
+        ```dockerfile
+        FROM ubuntu:22.04
+        RUN apt-get update && apt-get install -y \
+            python3-bpfcc clang llvm libbpf-dev \
+            linux-headers-generic build-essential \
+            iproute2 tcpdump
+        COPY . /scone-tools
+        WORKDIR /scone-tools
+        # Note: eBPF features may be limited in containers
+        ```
+        
+        ### VM Testing
+        - Use a Linux VM with kernel 4.15+ for full eBPF support
+        - Ensure the VM has root access and proper networking
+        - Install the same dependencies as listed in Prerequisites
+        
+        ## Troubleshooting Tests
+        
+        ### Common Issues
+        1. **"Operation not permitted" errors**: Need root privileges for eBPF operations
+        2. **Missing headers**: Install `linux-headers-$(uname -r)`
+        3. **BCC import errors**: Install `python3-bpfcc` package
+        4. **Network namespace failures**: Ensure proper kernel support and privileges
+        
+        ### Debug Mode
+        ```bash
+        # Enable eBPF debug output (if supported)
+        echo 1 | sudo tee /sys/kernel/debug/tracing/trace_pipe &
+        
+        # Run with verbose output
+        sudo python3 scone.py -v interface_name operation_name
+        ```
+        EOF
+        
+        echo "✅ Created comprehensive testing guide: TESTING.md"
+        cat TESTING.md
+
+    - name: Upload testing guide
+      uses: actions/upload-artifact@v4
+      with:
+        name: testing-guide
+        path: TESTING.md
+        retention-days: 30 

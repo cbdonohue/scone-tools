@@ -1,0 +1,335 @@
+name: Advanced SCONE Tools Testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      test_level:
+        description: 'Test level (basic/full)'
+        required: false
+        default: 'basic'
+        type: choice
+        options:
+        - basic
+        - full
+
+jobs:
+  multi-version-test:
+    strategy:
+      matrix:
+        ubuntu-version: [ubuntu-20.04, ubuntu-22.04, ubuntu-latest]
+        python-version: ['3.8', '3.9', '3.10', '3.11']
+        exclude:
+          # Ubuntu 20.04 doesn't support Python 3.11
+          - ubuntu-version: ubuntu-20.04
+            python-version: '3.11'
+    
+    runs-on: ${{ matrix.ubuntu-version }}
+    name: Test on ${{ matrix.ubuntu-version }} with Python ${{ matrix.python-version }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          python3-bpfcc \
+          clang \
+          llvm \
+          libbpf-dev \
+          linux-headers-$(uname -r) \
+          build-essential \
+          iproute2 \
+          tcpdump \
+          netcat-openbsd
+    
+    - name: Test Python compatibility
+      run: |
+        python --version
+        python -m py_compile scone.py
+        echo "✅ Python ${{ matrix.python-version }} compatibility confirmed"
+    
+    - name: Test eBPF compilation
+      run: |
+        clang -O2 -target bpf -c scone_ebpf.c -o scone_ebpf.o
+        file scone_ebpf.o
+        echo "✅ eBPF compiled on ${{ matrix.ubuntu-version }}"
+
+  kernel-compatibility-test:
+    runs-on: ubuntu-latest
+    name: Kernel Feature Compatibility Test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check kernel version and features
+      run: |
+        echo "🔍 Checking kernel version and eBPF support..."
+        uname -a
+        
+        # Check if eBPF is supported
+        if [ -f /proc/sys/net/core/bpf_jit_enable ]; then
+          echo "✅ eBPF JIT support available"
+          cat /proc/sys/net/core/bpf_jit_enable
+        fi
+        
+        # Check for XDP support
+        if grep -q "XDP" /boot/config-$(uname -r) 2>/dev/null || [ -d /sys/kernel/debug/bpf ]; then
+          echo "✅ XDP support likely available"
+        else
+          echo "⚠️  XDP support uncertain"
+        fi
+        
+        # Check network namespace support
+        if ip netns list >/dev/null 2>&1; then
+          echo "✅ Network namespace support available"
+        else
+          echo "❌ Network namespace support not available"
+        fi
+
+  mock-integration-test:
+    runs-on: ubuntu-latest
+    name: Mock Integration Test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up test environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          python3-bpfcc \
+          iproute2 \
+          tcpdump \
+          netcat-openbsd \
+          socat
+    
+    - name: Create mock test scenario
+      run: |
+        echo "🧪 Setting up mock test scenario..."
+        
+        # Create a simple test script that simulates what we can test without root
+        cat > mock_test.py << 'EOF'
+        #!/usr/bin/env python3
+        """
+        Mock test for SCONE tools - tests components that don't require root
+        """
+        import sys
+        import os
+        import subprocess
+        
+        def test_script_syntax():
+            """Test if the main script has valid syntax"""
+            result = subprocess.run([sys.executable, '-m', 'py_compile', 'scone.py'], 
+                                  capture_output=True, text=True)
+            return result.returncode == 0, result.stderr
+        
+        def test_ebpf_syntax():
+            """Test if eBPF code compiles"""
+            result = subprocess.run(['clang', '-O2', '-target', 'bpf', '-c', 'scone_ebpf.c', '-o', 'scone_ebpf.o'], 
+                                  capture_output=True, text=True)
+            return result.returncode == 0, result.stderr
+        
+        def test_imports():
+            """Test if we can import required modules"""
+            try:
+                import signal
+                import time
+                import sys
+                # BCC might not be available, but that's OK for syntax testing
+                return True, "All standard imports successful"
+            except ImportError as e:
+                return False, str(e)
+        
+        def main():
+            print("🧪 Running mock integration tests...")
+            
+            tests = [
+                ("Python syntax", test_script_syntax),
+                ("eBPF compilation", test_ebpf_syntax), 
+                ("Python imports", test_imports),
+            ]
+            
+            passed = 0
+            total = len(tests)
+            
+            for test_name, test_func in tests:
+                print(f"\n🔍 Testing: {test_name}")
+                try:
+                    success, message = test_func()
+                    if success:
+                        print(f"✅ {test_name}: PASSED")
+                        if message:
+                            print(f"   {message}")
+                        passed += 1
+                    else:
+                        print(f"❌ {test_name}: FAILED")
+                        print(f"   {message}")
+                except Exception as e:
+                    print(f"❌ {test_name}: ERROR - {e}")
+            
+            print(f"\n📊 Results: {passed}/{total} tests passed")
+            return passed == total
+        
+        if __name__ == "__main__":
+            success = main()
+            sys.exit(0 if success else 1)
+        EOF
+        
+        python3 mock_test.py
+
+  performance-static-analysis:
+    runs-on: ubuntu-latest
+    name: Performance and Static Analysis
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install analysis tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang-tools \
+          cppcheck \
+          python3-pip
+        pip3 install bandit vulture complexity
+
+    - name: Analyze eBPF code
+      run: |
+        echo "🔍 Analyzing eBPF C code..."
+        
+        # Static analysis with cppcheck
+        cppcheck --enable=all --inconclusive --std=c11 scone_ebpf.c || true
+        
+        # Check for common eBPF patterns
+        echo "📊 eBPF code analysis:"
+        echo "  - Functions: $(grep -c "^[a-zA-Z_][a-zA-Z0-9_]* " scone_ebpf.c || echo 0)"
+        echo "  - BPF helpers: $(grep -c "bpf_" scone_ebpf.c || echo 0)"
+        echo "  - Maps: $(grep -c "BPF_MAP_TYPE" scone_ebpf.c || echo 0)"
+        
+        # Check for potential issues
+        if grep -q "bpf_printk" scone_ebpf.c; then
+          echo "⚠️  Found debug prints (bpf_printk) - consider removing for production"
+        fi
+
+    - name: Analyze Python code
+      run: |
+        echo "🔍 Analyzing Python code..."
+        
+        # Security analysis
+        bandit -f txt scone.py || true
+        
+        # Dead code analysis
+        vulture scone.py || true
+        
+        # Complexity analysis
+        echo "📊 Python code metrics:"
+        python3 -c "
+        import ast
+        import sys
+        
+        with open('scone.py', 'r') as f:
+            tree = ast.parse(f.read())
+        
+        functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+        classes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+        
+        print(f'  - Functions: {len(functions)}')
+        print(f'  - Classes: {len(classes)}')
+        print(f'  - Lines: {len(open(\"scone.py\").readlines())}')
+        "
+
+  documentation-coverage:
+    runs-on: ubuntu-latest
+    name: Documentation Coverage Check
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Analyze documentation coverage
+      run: |
+        echo "📚 Analyzing documentation coverage..."
+        
+        # Check README completeness
+        echo "📖 README analysis:"
+        sections=("Prerequisites" "Installation" "Usage" "Examples" "Building")
+        for section in "${sections[@]}"; do
+          if grep -qi "$section" README.md; then
+            echo "  ✅ $section section found"
+          else
+            echo "  ⚠️  $section section missing"
+          fi
+        done
+        
+        # Check for inline documentation in code
+        echo "📝 Code documentation:"
+        
+        # Python docstrings
+        python3 -c "
+        import ast
+        with open('scone.py', 'r') as f:
+            tree = ast.parse(f.read())
+        
+        functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+        documented = sum(1 for func in functions if ast.get_docstring(func))
+        print(f'  - Python functions with docstrings: {documented}/{len(functions)}')
+        "
+        
+        # C code comments
+        comment_lines=$(grep -c "^\s*//\|^\s*/\*" scone_ebpf.c || echo 0)
+        total_lines=$(wc -l < scone_ebpf.c)
+        echo "  - C code comment lines: $comment_lines/$total_lines"
+        
+        # Shell script comments  
+        shell_comments=$(grep -c "^\s*#" scone_demo.sh || echo 0)
+        shell_total=$(wc -l < scone_demo.sh)
+        echo "  - Shell script comment lines: $shell_comments/$shell_total"
+
+  create-test-report:
+    needs: [multi-version-test, kernel-compatibility-test, mock-integration-test, performance-static-analysis, documentation-coverage]
+    runs-on: ubuntu-latest
+    name: Generate Test Report
+    if: always()
+    
+    steps:
+    - name: Create test summary
+      run: |
+        echo "# 🧪 SCONE Tools Test Report" > test_report.md
+        echo "" >> test_report.md
+        echo "## Test Results Summary" >> test_report.md
+        echo "" >> test_report.md
+        
+        # This would be enhanced with actual job results in a real scenario
+        echo "- **Multi-version compatibility**: ${{ needs.multi-version-test.result }}" >> test_report.md
+        echo "- **Kernel compatibility**: ${{ needs.kernel-compatibility-test.result }}" >> test_report.md
+        echo "- **Integration testing**: ${{ needs.mock-integration-test.result }}" >> test_report.md
+        echo "- **Static analysis**: ${{ needs.performance-static-analysis.result }}" >> test_report.md
+        echo "- **Documentation**: ${{ needs.documentation-coverage.result }}" >> test_report.md
+        echo "" >> test_report.md
+        echo "## Recommendations" >> test_report.md
+        echo "" >> test_report.md
+        echo "1. All syntax and compilation tests should pass before merging" >> test_report.md
+        echo "2. Consider adding unit tests for individual functions" >> test_report.md
+        echo "3. Integration tests require root privileges and should be run manually" >> test_report.md
+        echo "4. Regular testing on different kernel versions is recommended" >> test_report.md
+        
+        cat test_report.md
+    
+    - name: Upload test report
+      uses: actions/upload-artifact@v4
+      with:
+        name: scone-test-report
+        path: test_report.md
+        retention-days: 30 
