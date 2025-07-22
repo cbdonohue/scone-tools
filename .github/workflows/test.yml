@@ -2,9 +2,9 @@ name: SCONE Tools Tests
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ chris_cicd ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ chris_cicd ]
   workflow_dispatch:
 
 jobs:
