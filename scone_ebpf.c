@@ -110,7 +110,7 @@ static __always_inline u64 check_quic(void *data, void *data_end) {
     struct iphdr *ip = (void *)eth + sizeof(*eth);
     struct ipv6hdr *ip6 = (void *)ip;
     struct udphdr *udp = (void *)ip + sizeof(*ip);
-    if (ipproto == ETH_P_IPV6) udp = (void *)ip6 + sizeof(*ip);
+    if (ipproto == ETH_P_IPV6) udp = (void *)ip6 + sizeof(*ip6);
     char *quic = (char *)udp + sizeof(*udp);
     u16 port;
 
