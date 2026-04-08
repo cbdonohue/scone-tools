@@ -18,5 +18,15 @@ jobs:
           if [ -f Makefile ]; then
             make
           else
-            find . -name "*.c" -not -path "./.git/*" | xargs -I{} sh -c 'gcc -o /tmp/$(basename {} .c) {} -Wall 2>&1'
+            # Build non-eBPF C files normally; eBPF files (.bpf.c) use
+            # -fsyntax-only with kernel type stubs since bpftool/BTF is
+            # not available in the CI runner.
+            find . -name "*.c" -not -name "*.bpf.c" -not -path "./.git/*" | \
+              xargs -I{} sh -c 'gcc -o /tmp/$(basename {} .c) {} -Wall 2>&1'
+            find . -name "*.bpf.c" -not -path "./.git/*" | \
+              xargs -I{} sh -c 'gcc -fsyntax-only \
+                -D__u8=uint8_t -D__u16=uint16_t -D__u32=uint32_t \
+                -D__u64=uint64_t -D__s8=int8_t -D__s16=int16_t \
+                -D__s32=int32_t -D__s64=int64_t \
+                -include stdint.h {} -Wall 2>&1'
           fi
